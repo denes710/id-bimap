@@ -3,13 +3,15 @@
 
 #include <cassert>
 #include <algorithm>
+#include <functional> 
 #include <map>
 #include <string>
 #include <type_traits>
 #include <stdexcept>
-#include <memory>
-#include <functional>
 #include <set>
+#include <vector>
+#include <optional>
+#include <memory>
 
 struct NoValueType
 {};
@@ -22,8 +24,70 @@ class id_bimap
     public:
         using mapped_type = mappedType;
         using key_type = keyType;
-        using TKeyMap = std::map<keyType, mappedType>;
         using TMappedMap = std::map<const std::reference_wrapper<const mapped_type>, key_type, MappedLess>;
+        using TVector = std::vector<std::optional<mapped_type>>;
+
+        struct Iterator
+        {
+            using iterator_category = std::input_iterator_tag;
+            using value_type        = std::pair<const key_type&, const mapped_type&>;
+            using reference_type    = const std::pair<const key_type&, const mapped_type&>&;
+            using pointer_type      = const std::pair<const key_type&, const mapped_type&>*;
+
+            Iterator(const TVector& p_vector, const TMappedMap& p_mapped, key_type p_index)
+                : m_vector(p_vector)
+                , m_mapped(p_mapped)
+            {
+                m_iterator = p_vector.cbegin();
+                std::advance(m_iterator, p_index);
+                m_current = std::make_shared<value_type>(m_mapped.at(m_iterator->value()), m_iterator->value());
+            }
+
+            Iterator(
+                const TVector& p_vector,
+                const TMappedMap& p_mapped,
+                const typename TVector::const_iterator& p_iterator)
+                : m_iterator(p_iterator)
+                , m_vector(p_vector)
+                , m_mapped(p_mapped)
+            {}
+
+            reference_type operator*() const
+            { return *m_current.get(); }
+
+            pointer_type operator->()
+            { return m_current.get(); }
+
+            Iterator& operator++()
+            {
+                ++m_iterator;
+                if (m_iterator == m_vector.end())
+                    return *this;
+
+                for (; m_iterator != m_vector.end(); ++m_iterator)
+                {
+                    if (m_iterator->has_value())
+                    {
+                        m_current =
+                            std::make_shared<value_type>(m_mapped.at(m_iterator->value()), m_iterator->value());
+                        return *this;
+                    }
+                }
+                return *this;
+            }
+
+            friend bool operator== (const Iterator& a, const Iterator& b)
+            { return a.m_iterator == b.m_iterator; };
+
+            friend bool operator!= (const Iterator& a, const Iterator& b)
+            { return a.m_iterator != b.m_iterator; };
+
+        private:
+            typename TVector::const_iterator m_iterator;
+            const TVector& m_vector;
+            const TMappedMap& m_mapped;
+            std::shared_ptr<value_type> m_current;
+        };
 
         id_bimap()
         {
@@ -41,15 +105,21 @@ class id_bimap
         }
 
         id_bimap(const id_bimap& p_other)
+            : m_vector(p_other.m_vector)
+            , m_logicalDeletedKeys(p_other.m_logicalDeletedKeys)
         {
-            for (const auto& [key, value] : p_other.m_keyMap)
-                insert(value);
+
+            for (auto i = 0u; i < m_vector.size(); ++i)
+            {
+                if (m_vector[i])
+                    m_valuesMap[*m_vector[i]] = i;
+            }
         }
 
         id_bimap(id_bimap&& p_other) noexcept
-            : m_keyMap(std::move(p_other.m_keyMap))
+            : m_vector(std::move(p_other.m_vector))
             , m_valuesMap(std::move(p_other.m_valuesMap))
-            , m_currentIndex(p_other.m_currentIndex)
+            , m_logicalDeletedKeys(std::move(p_other.m_logicalDeletedKeys))
         {}
 
         ~id_bimap() = default;
@@ -65,40 +135,55 @@ class id_bimap
         {
             if (this != &p_other)
             {
-                m_keyMap = std::move(p_other.m_keyMap);
+                m_vector = std::move(p_other.m_vector);
                 m_valuesMap = std::move(p_other.m_valuesMap);
-                m_currentIndex = p_other.m_currentIndex;
+                m_logicalDeletedKeys = std::move(p_other.m_logicalDeletedKeys);
             }
             return *this;
         }
 
         std::size_t size() const
-        { return m_keyMap.size(); }
+        { return m_valuesMap.size(); }
 
         bool empty() const
-        { return m_keyMap.empty(); }
+        { return m_valuesMap.empty(); }
 
         void clear()
         {
             m_valuesMap.clear();
-            m_keyMap.clear();
-            m_currentIndex = 0;
+            m_vector.clear();
+            m_logicalDeletedKeys.clear();
         }
 
-        std::pair<typename TKeyMap::const_iterator, bool> insert(const mappedType& p_value)
+        std::pair<Iterator, bool> insert(const mappedType& p_value)
         {
-            const auto it = std::find_if(
-                m_keyMap.begin(),
-                m_keyMap.end(),
-                [&](const typename TKeyMap::value_type& p_elem){ return p_elem.second == p_value; });
-            
-            if (it != m_keyMap.end())
-                return {it, false};
-            
-            const auto result = m_keyMap.insert({m_currentIndex++, p_value});
-            m_valuesMap[result.first->second] = result.first->first;
+            const auto it = find(p_value);
 
-            return result;
+            if (it != end())
+                return {it, false};
+
+            const auto index = pop_next_index();
+            if (index < m_vector.size())
+            {
+                m_vector[index].emplace(p_value);
+                m_valuesMap[*m_vector[index]] = index;
+            }
+            else
+            {
+                const auto prevCapacity = m_vector.capacity();
+                m_vector.push_back(p_value);
+
+                if (prevCapacity == m_vector.capacity())
+                {
+                    m_valuesMap[*m_vector[index]] = index;
+                }
+                else
+                {
+                    UpdateValueMap();
+                }
+            }
+
+            return {Iterator(m_vector, m_valuesMap, index), true};
         }
 
         const key_type& operator[](const mapped_type& p_value) const
@@ -113,101 +198,139 @@ class id_bimap
             }
         }
 
-        const mapped_type& operator[](const key_type& p_value) const
-        { return m_keyMap.at(p_value); }
-
-        void erase(key_type p_value)
+        const mapped_type& operator[](const key_type& p_key) const
         {
-            if (p_value >= m_currentIndex)
-                return;
-
-            const auto erased = m_keyMap.extract(p_value);
-            if (erased.key() + 1 == m_currentIndex) // it was the last elem
+            if (p_key < m_vector.size())
             {
-                --m_currentIndex;
-                return;
+                if (m_vector[p_key].has_value())
+                    return *m_vector[p_key];
             }
+            throw std::out_of_range("out of range");
+        }
 
-            for (auto index = erased.key() + 1; index < m_currentIndex; ++index)
+        void erase(key_type p_key)
+        {
+            if (p_key < m_vector.size())
             {
-                auto elem = m_keyMap.extract(index);
-                --elem.key();
-                const auto key = elem.key();
-                m_keyMap.insert(std::move(elem));
-                m_valuesMap[m_keyMap[key]] = key;
+                if (m_vector[p_key].has_value())
+                {
+                    m_valuesMap.erase(*m_vector[p_key]);
+                    m_logicalDeletedKeys.insert(p_key);
+                    m_vector[p_key].reset();
+                }
             }
-            --m_currentIndex;
         }
 
         void erase(const mapped_type& p_value)
         {
+            const auto it = m_valuesMap.find(p_value);
+
+            if (it == m_valuesMap.end())
+                return;
+
+            const auto key = it->second;
+            m_valuesMap.erase(it);
+            m_logicalDeletedKeys.insert(key);
+            m_vector[key].reset();
+        }
+
+        Iterator find(const mapped_type& p_value) const
+        {
             try
             {
-                erase(m_valuesMap.at(p_value));           
+                const auto key = m_valuesMap.at(p_value);
+                return Iterator(m_vector, m_valuesMap, key);
             }
             catch(const std::out_of_range& p_exception)
             {
-                return;
+                return end();
             }
         }
 
-        typename TKeyMap::const_iterator find(const mapped_type& p_value) const
+        Iterator begin() const
         {
-            return std::find_if(
-                m_keyMap.begin(),
-                m_keyMap.end(),
-                [&](const typename TKeyMap::value_type& p_elem){ return p_elem.second == p_value; });
+            for (auto i = 0u; i < m_vector.size(); ++i)
+            {
+                if (m_vector[i].has_value())
+                    return Iterator(m_vector, m_valuesMap, i);
+            }
+
+            return end();
         }
 
-        typename TKeyMap::const_iterator begin() const
-        { return m_keyMap.begin(); }
-
-        typename TKeyMap::const_iterator end() const
-        { return m_keyMap.end(); }
+        Iterator end() const
+        { return Iterator(m_vector, m_valuesMap, m_vector.end()); }
 
         template<class... Args>
-        std::pair<typename TKeyMap::const_iterator, bool> emplace(Args&&... args)
-        { return m_keyMap.emplace(m_currentIndex++, std::forward<Args>(args)...); }
-
-        typename TKeyMap::const_iterator find_if(std::function<bool(const mappedType&)> p_function) const
+        std::pair<Iterator, bool> emplace(Args&&... args)
         {
-            for (auto it = m_keyMap.begin(); it != m_keyMap.end(); ++it)
+            const auto index = pop_next_index();
+            if (index < m_vector.size())
             {
-                if (p_function(it->second))
-                    return it;
+                m_vector[index].emplace(std::forward<Args>(args)...);
+                m_valuesMap[*m_vector[index]] = index;
+            }
+            else
+            {
+                const auto prevCapacity = m_vector.capacity();
+
+                m_vector.emplace_back(std::forward<Args>(args)...);
+
+                if (prevCapacity == m_vector.capacity())
+                {
+                    m_valuesMap[*m_vector[index]] = index;
+                }
+                else
+                {
+                    UpdateValueMap();
+                }
             }
 
-            return m_keyMap.end();
+            return {Iterator(m_vector, m_valuesMap, index), true};
+        }
+
+        Iterator find_if(std::function<bool(const mappedType&)> p_function) const
+        {
+            for (auto i = 0u; i != m_vector.size(); ++i)
+            {
+                if (m_vector[i].has_value() && p_function(*m_vector[i]))
+                    return Iterator(m_vector, m_valuesMap, i);
+            }
+
+            return end();
         }
 
         void delete_all(std::function<bool(const mappedType&)> p_function)
         {
-            std::set<key_type> remainedKey;
-            for (auto it = m_keyMap.begin(); it != m_keyMap.end();)
+            for (auto i = 0u; i != m_vector.size(); ++i)
             {
-                if (p_function(it->second))
-                    m_keyMap.erase(it++);
-                else
+                if (m_vector[i].has_value() && p_function(*m_vector[i]))
                 {
-                    remainedKey.insert(it->first);
-                    ++it;
+                    m_logicalDeletedKeys.insert(i);
+                    m_valuesMap.erase(*m_vector[i]);
+                    m_vector[i].reset();
                 }
             }
+        }
 
-            if (remainedKey.empty())
-                return;
+        key_type next_index() const
+        { return m_logicalDeletedKeys.empty() ? m_vector.size() : *m_logicalDeletedKeys.begin(); }
 
-            m_currentIndex = 0;
-            m_valuesMap.clear();
-            if (m_keyMap.empty())
-                return;
+        std::size_t capacity() const
+        { return m_vector.size(); }
 
-            for (const auto key : remainedKey)
+        bool is_contiguous() const
+        {
+            bool hasValue = false;
+            for (auto it = m_vector.rbegin(); it != m_vector.rend(); ++it)
             {
-                auto current = m_keyMap.extract(key);
-                current.key() = m_currentIndex++;
-                m_keyMap.insert(std::move(current));
+                if (it->has_value())
+                    hasValue = true;
+                else if (hasValue)
+                    return false;
             }
+
+            return true;
         }
 
     private:
@@ -217,9 +340,29 @@ class id_bimap
             { return p_lhs < p_rhs; }
         };
 
-        TKeyMap m_keyMap;
+        key_type pop_next_index()
+        {
+            if (m_logicalDeletedKeys.empty())
+                return m_vector.size();
+
+            const auto ret = *m_logicalDeletedKeys.begin();
+            m_logicalDeletedKeys.erase(m_logicalDeletedKeys.begin());
+            return ret;
+        }
+
+        void UpdateValueMap()
+        {
+            m_valuesMap.clear();
+            for (auto i = 0; i < m_vector.size(); ++i)
+            {
+                if (m_vector[i].has_value())
+                    m_valuesMap[*m_vector[i]] = i;
+            }
+        }
+
+        TVector m_vector;
         TMappedMap m_valuesMap;
-        key_t m_currentIndex = 0;
+        std::set<key_type> m_logicalDeletedKeys;
 };
 
 template <typename mapped_type = NoValueType>

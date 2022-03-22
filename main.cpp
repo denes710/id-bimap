@@ -1,12 +1,13 @@
 #include "id_bimap.h"
 
-#include <iostream>
 #include <cassert>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <utility>
 #include <sstream>
+#include <type_traits>
+#include <utility>
 
 void F0_types()
 {
@@ -289,11 +290,99 @@ void F2_advanced()
          "32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62, ");
 }
 
+void F3_logicalDelete()
+{
+  {
+    id_bimap<char, short> SCM;
+    static_assert(std::is_same_v<decltype(SCM.next_index()), short>,
+                  "Return index!");
+  }
+
+  string_id_bimap SM;
+
+  assert(SM.size() == 0 && SM.capacity() == 0 &&
+         SM.next_index() == 0); // No elements yet, so 1st element is index 0.
+
+  SM.insert("gsd");
+  SM.insert("Whisperity");
+  SM.insert("John");
+  SM.insert("Hyrum");
+
+  assert(SM.size() == 4 && SM.capacity() == 4);
+  assert(SM.next_index() == 4); // [0, 1, 2, 3] are allocated indices.
+  assert(SM.is_contiguous());
+
+  SM.erase("gsd");
+
+  assert(SM.size() == 3 && SM.capacity() == 4 && SM.next_index() == 0);
+  assert(!SM.is_contiguous());
+
+  try
+  {
+    SM["gsd"];
+    assert(false && "Unreachable.");
+  } catch (const std::domain_error&) {}
+
+  SM.delete_all([](auto&& E) -> bool
+  {
+    assert(E != "gsd" && "Deleted element remained in iteration?");
+    return false; // Don't delete anything!
+  });
+
+  SM.erase("Bryce"); // Deleting non-existent element.
+  assert(!SM.is_contiguous() && SM.size() == 3 && SM.capacity() == 4 &&
+         SM.next_index() == 0);
+
+  SM.erase("John");
+  assert(SM.next_index() == 0); // [-, 1, -, 3] are allocated indices.
+  assert(SM.size() == 2 && SM.capacity() == 4);
+  assert(!SM.is_contiguous());
+
+  try
+  {
+    SM[2];
+    assert(false && "Unreachable.");
+  } catch (const std::out_of_range&) {}
+
+  auto IR1 = SM.insert("Hyrum");
+  assert(IR1.second == false && IR1.first->first == 3);
+
+  auto IR2 = SM.insert("Bjarne");
+  assert(IR2.second == true &&
+         IR2.first->first == 0); // Insert at first "good" hole.
+  assert(SM.size() == 3 && SM.capacity() == 4);
+  assert(!SM.is_contiguous());
+
+  assert(SM.next_index() == 2);
+  auto IR3 = SM.insert("Herb");
+  assert(IR3.second == true &&
+         IR3.first->first == 2); // Insert at first "good" hole.
+  assert(SM.is_contiguous());
+  assert(SM.capacity() == 4);
+
+  SM.insert("Alexandrescu");
+  assert(SM.size() == 5 && SM.next_index() == 5 && SM.capacity() == 5);
+  assert(SM.is_contiguous());
+
+  id_bimap<SMFCounter> SMFM;
+  SMFM.emplace(1);
+  SMFM.emplace(2);
+
+  SMFCounter::reset();
+  SMFM.erase(0);
+  assert(SMFM.size() == 1 && SMFM.capacity() == 2);
+  assert(SMFCounter::Ctor == 0 && SMFCounter::CCtor == 0 &&
+         SMFCounter::MCtor == 0 && SMFCounter::CAsg == 0 &&
+         SMFCounter::MAsg == 0 && SMFCounter::Dtor == 1 &&
+         "erase() should destroy removed elements!");
+}
+
 int main()
 {
-    F0_types();
-    F1_operations();
-    F2_advanced();
+    //F0_types();
+    //F1_operations();
+    //F2_advanced();
+    F3_logicalDelete();
     std::cout << "Test end!" << std::endl;
 
     return 0;
