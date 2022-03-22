@@ -8,7 +8,8 @@
 #include <type_traits>
 #include <stdexcept>
 #include <memory>
-
+#include <functional>
+#include <set>
 
 struct NoValueType
 {};
@@ -163,6 +164,51 @@ class id_bimap
 
         typename TKeyMap::const_iterator end() const
         { return m_keyMap.end(); }
+
+        template<class... Args>
+        std::pair<typename TKeyMap::const_iterator, bool> emplace(Args&&... args)
+        { return m_keyMap.emplace(m_currentIndex++, std::forward<Args>(args)...); }
+
+        typename TKeyMap::const_iterator find_if(std::function<bool(const mappedType&)> p_function) const
+        {
+            for (auto it = m_keyMap.begin(); it != m_keyMap.end(); ++it)
+            {
+                if (p_function(it->second))
+                    return it;
+            }
+
+            return m_keyMap.end();
+        }
+
+        void delete_all(std::function<bool(const mappedType&)> p_function)
+        {
+            std::set<key_type> remainedKey;
+            for (auto it = m_keyMap.begin(); it != m_keyMap.end();)
+            {
+                if (p_function(it->second))
+                    m_keyMap.erase(it++);
+                else
+                {
+                    remainedKey.insert(it->first);
+                    ++it;
+                }
+            }
+
+            if (remainedKey.empty())
+                return;
+
+            m_currentIndex = 0;
+            m_valuesMap.clear();
+            if (m_keyMap.empty())
+                return;
+
+            for (const auto key : remainedKey)
+            {
+                auto current = m_keyMap.extract(key);
+                current.key() = m_currentIndex++;
+                m_keyMap.insert(std::move(current));
+            }
+        }
 
     private:
         struct MappedLess
