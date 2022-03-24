@@ -377,12 +377,64 @@ void F3_logicalDelete()
          "erase() should destroy removed elements!");
 }
 
+void F3b_reserve()
+{
+  string_id_bimap SM;
+  SM.reserve(4);
+
+  assert(SM.size() == 0 && SM.capacity() == 4);
+
+  SM.insert("gsd");        // 0
+  SM.insert("Whisperity"); // 1
+  SM.insert("Herb");       // 2
+  SM.insert("Xazax");      // 3
+  SM.insert("Bryce");      // 4
+
+  assert(SM.size() == 5 && SM.capacity() == 5);
+
+  SM.erase("Herb");
+  assert(SM.size() == 4 && SM.capacity() == 5);
+  try
+  {
+    SM[2];
+    assert(false && "Unreachable.");
+  } catch (const std::out_of_range&) {}
+
+  auto S1 = SM[0];
+  auto S2 = SM[3];
+
+  // Valid: [0, 1, -, 3, 4, -]
+
+  SM.reserve(3); // Nothing happens, as there would be elements AFTER the
+                 // potentially shrinked size!
+  assert(SM.size() == 4 && SM.capacity() == 5);
+  // Valid: [0, 1, -, 3, 4, -]
+
+  SM.reserve(8);
+  assert(SM.size() == 4 && SM.capacity() == 8);
+  // Valid: [0, 1, -, 3, 4, -, -, -]
+
+  SM.reserve(5); // prolematic
+  // Valid: [0, 1, -, 3, 4]
+  assert(SM.size() == 4 && SM.capacity() == 5);
+
+  SMFCounter::reset();
+  id_bimap<SMFCounter> SMFM;
+  SMFM.reserve(1024);
+  assert(SMFM.size() == 0 && SMFM.capacity() == 1024);
+  assert(SMFCounter::Ctor == 0 && SMFCounter::CCtor == 0 &&
+         SMFCounter::MCtor == 0 && SMFCounter::CAsg == 0 &&
+         SMFCounter::MAsg == 0 && SMFCounter::Dtor == 0 &&
+         "reserve() should not directly construct any elements!");
+}
+
 int main()
 {
     //F0_types();
     //F1_operations();
     //F2_advanced();
     F3_logicalDelete();
+    F3b_reserve();
     std::cout << "Test end!" << std::endl;
 
     return 0;

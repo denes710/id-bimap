@@ -107,6 +107,7 @@ class id_bimap
         id_bimap(const id_bimap& p_other)
             : m_vector(p_other.m_vector)
             , m_logicalDeletedKeys(p_other.m_logicalDeletedKeys)
+            , m_reserveSize(p_other.m_reserveSize)
         {
 
             for (auto i = 0u; i < m_vector.size(); ++i)
@@ -120,6 +121,7 @@ class id_bimap
             : m_vector(std::move(p_other.m_vector))
             , m_valuesMap(std::move(p_other.m_valuesMap))
             , m_logicalDeletedKeys(std::move(p_other.m_logicalDeletedKeys))
+            , m_reserveSize(p_other.m_reserveSize)
         {}
 
         ~id_bimap() = default;
@@ -138,6 +140,7 @@ class id_bimap
                 m_vector = std::move(p_other.m_vector);
                 m_valuesMap = std::move(p_other.m_valuesMap);
                 m_logicalDeletedKeys = std::move(p_other.m_logicalDeletedKeys);
+                m_reserveSize = p_other.m_reserveSize;
             }
             return *this;
         }
@@ -153,6 +156,7 @@ class id_bimap
             m_valuesMap.clear();
             m_vector.clear();
             m_logicalDeletedKeys.clear();
+            m_reserveSize = 0;
         }
 
         std::pair<Iterator, bool> insert(const mappedType& p_value)
@@ -165,6 +169,7 @@ class id_bimap
             const auto index = pop_next_index();
             if (index < m_vector.size())
             {
+                const auto inputIndex = index;
                 m_vector[index].emplace(p_value);
                 m_valuesMap[*m_vector[index]] = index;
             }
@@ -175,10 +180,14 @@ class id_bimap
 
                 if (prevCapacity == m_vector.capacity())
                 {
+                    if (m_reserveSize)
+                        --m_reserveSize;
+
                     m_valuesMap[*m_vector[index]] = index;
                 }
                 else
                 {
+                    m_reserveSize = 0;
                     UpdateValueMap();
                 }
             }
@@ -278,10 +287,14 @@ class id_bimap
 
                 if (prevCapacity == m_vector.capacity())
                 {
+                    if (m_reserveSize)
+                        --m_reserveSize;
+
                     m_valuesMap[*m_vector[index]] = index;
                 }
                 else
                 {
+                    m_reserveSize = 0;
                     UpdateValueMap();
                 }
             }
@@ -317,7 +330,7 @@ class id_bimap
         { return m_logicalDeletedKeys.empty() ? m_vector.size() : *m_logicalDeletedKeys.begin(); }
 
         std::size_t capacity() const
-        { return m_vector.size(); }
+        { return m_vector.size() + m_reserveSize; }
 
         bool is_contiguous() const
         {
@@ -331,6 +344,50 @@ class id_bimap
             }
 
             return true;
+        }
+
+        void reserve(std::size_t p_size)
+        {
+            if (p_size > m_vector.size())
+            {
+                m_reserveSize = p_size - m_vector.size();
+                const auto prevCapacity = m_vector.capacity();
+                m_vector.reserve(p_size);
+                if (prevCapacity < p_size)
+                    UpdateValueMap();
+            }
+            else if (p_size  < m_vector.size())
+            {
+                if (m_logicalDeletedKeys.empty())
+                    return;
+
+
+                auto count = 0u;
+                for (auto it = m_vector.rbegin(); it != m_vector.rend(); ++it)
+                {
+                    if (it->has_value())
+                        break;
+                    ++count;
+                }
+
+                const auto numberOfDeletion = m_vector.size() - p_size;
+
+                if (numberOfDeletion > count)
+                    return;
+
+                for (auto i = 0; i < numberOfDeletion; ++i)
+                    m_logicalDeletedKeys.erase(prev(m_logicalDeletedKeys.end()));
+
+                m_reserveSize = 0;
+                const auto prevCapacity = m_vector.capacity();
+                m_vector.reserve(p_size);
+                if (prevCapacity < p_size)
+                    UpdateValueMap();
+            }
+            else
+            {
+                m_reserveSize = 0;
+            }
         }
 
     private:
@@ -363,6 +420,7 @@ class id_bimap
         TVector m_vector;
         TMappedMap m_valuesMap;
         std::set<key_type> m_logicalDeletedKeys;
+        unsigned m_reserveSize = 0;
 };
 
 template <typename mapped_type = NoValueType>
