@@ -13,5 +13,8 @@ set_target_properties(IdBimap PROPERTIES LINKER_LANGUAGE CXX)
 # turn off compile error messages
 add_compile_definitions(NFAIL)
 
+find_package (Threads)
+
 # add the executable
 add_executable(Testing main.cpp)
+target_link_libraries(Testing ${CMAKE_THREAD_LIBS_INIT})

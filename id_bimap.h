@@ -12,6 +12,8 @@
 #include <vector>
 #include <optional>
 #include <memory>
+#include <mutex>
+#include <shared_mutex>
 
 struct NoValueType
 {};
@@ -26,6 +28,7 @@ class id_bimap
         using key_type = keyType;
         using TMappedMap = std::map<const std::reference_wrapper<const mapped_type>, key_type, MappedLess>;
         using TVector = std::vector<std::optional<mapped_type>>;
+        using TMutex = std::shared_mutex;
 
         struct Iterator
         {
@@ -105,17 +108,9 @@ class id_bimap
         }
 
         id_bimap(const id_bimap& p_other)
-            : m_vector(p_other.m_vector)
-            , m_logicalDeletedKeys(p_other.m_logicalDeletedKeys)
-            , m_reserveSize(p_other.m_reserveSize)
-        {
+            : id_bimap(p_other, std::unique_lock(p_other.m_mutex))
 
-            for (auto i = 0u; i < m_vector.size(); ++i)
-            {
-                if (m_vector[i])
-                    m_valuesMap[*m_vector[i]] = i;
-            }
-        }
+        {}
 
         id_bimap(id_bimap&& p_other) noexcept
             : m_vector(std::move(p_other.m_vector))
@@ -137,6 +132,10 @@ class id_bimap
         {
             if (this != &p_other)
             {
+                std::unique_lock lhs_lk(m_mutex, std::defer_lock);
+                std::unique_lock rhs_lk(p_other.m_mutex, std::defer_lock);
+                std::lock(lhs_lk, rhs_lk);
+
                 m_vector = std::move(p_other.m_vector);
                 m_valuesMap = std::move(p_other.m_valuesMap);
                 m_logicalDeletedKeys = std::move(p_other.m_logicalDeletedKeys);
@@ -146,13 +145,21 @@ class id_bimap
         }
 
         std::size_t size() const
-        { return m_valuesMap.size(); }
+        {
+            std::shared_lock lock(m_mutex);
+            return m_valuesMap.size();
+        }
 
         bool empty() const
-        { return m_valuesMap.empty(); }
+        {
+            std::shared_lock lock(m_mutex);
+            return m_valuesMap.empty();
+        }
 
         void clear()
         {
+            std::unique_lock lock(m_mutex);
+
             m_valuesMap.clear();
             m_vector.clear();
             m_logicalDeletedKeys.clear();
@@ -161,9 +168,11 @@ class id_bimap
 
         std::pair<Iterator, bool> insert(const mappedType& p_value)
         {
-            const auto it = find(p_value);
+            std::unique_lock lock(m_mutex);
 
-            if (it != end())
+            const auto it = findImpl(p_value);
+
+            if (it != endImpl())
                 return {it, false};
 
             const auto index = pop_next_index();
@@ -197,6 +206,8 @@ class id_bimap
 
         const key_type& operator[](const mapped_type& p_value) const
         {
+            std::shared_lock lock(m_mutex);
+
             try
             {
                 return m_valuesMap.at(p_value);
@@ -209,6 +220,8 @@ class id_bimap
 
         const mapped_type& operator[](const key_type& p_key) const
         {
+            std::shared_lock lock(m_mutex);
+
             if (p_key < m_vector.size())
             {
                 if (m_vector[p_key].has_value())
@@ -219,6 +232,8 @@ class id_bimap
 
         void erase(key_type p_key)
         {
+            std::unique_lock lock(m_mutex);
+
             if (p_key < m_vector.size())
             {
                 if (m_vector[p_key].has_value())
@@ -232,6 +247,8 @@ class id_bimap
 
         void erase(const mapped_type& p_value)
         {
+            std::unique_lock lock(m_mutex);
+
             const auto it = m_valuesMap.find(p_value);
 
             if (it == m_valuesMap.end())
@@ -245,34 +262,34 @@ class id_bimap
 
         Iterator find(const mapped_type& p_value) const
         {
-            try
-            {
-                const auto key = m_valuesMap.at(p_value);
-                return Iterator(m_vector, m_valuesMap, key);
-            }
-            catch(const std::out_of_range& p_exception)
-            {
-                return end();
-            }
+            std::shared_lock lock(m_mutex);
+            return findImpl(p_value);
         }
 
         Iterator begin() const
         {
+            std::shared_lock lock(m_mutex);
+
             for (auto i = 0u; i < m_vector.size(); ++i)
             {
                 if (m_vector[i].has_value())
                     return Iterator(m_vector, m_valuesMap, i);
             }
 
-            return end();
+            return endImpl();
         }
 
         Iterator end() const
-        { return Iterator(m_vector, m_valuesMap, m_vector.end()); }
+        {
+            std::shared_lock lock(m_mutex);
+            return endImpl();
+        }
 
         template<class... Args>
         std::pair<Iterator, bool> emplace(Args&&... args)
         {
+            std::unique_lock lock(m_mutex);
+
             const auto index = pop_next_index();
             if (index < m_vector.size())
             {
@@ -304,17 +321,21 @@ class id_bimap
 
         Iterator find_if(std::function<bool(const mappedType&)> p_function) const
         {
+            std::shared_lock lock(m_mutex);
+
             for (auto i = 0u; i != m_vector.size(); ++i)
             {
                 if (m_vector[i].has_value() && p_function(*m_vector[i]))
                     return Iterator(m_vector, m_valuesMap, i);
             }
 
-            return end();
+            return endImpl();
         }
 
         void delete_all(std::function<bool(const mappedType&)> p_function)
         {
+            std::unique_lock lock(m_mutex);
+
             for (auto i = 0u; i != m_vector.size(); ++i)
             {
                 if (m_vector[i].has_value() && p_function(*m_vector[i]))
@@ -327,13 +348,20 @@ class id_bimap
         }
 
         key_type next_index() const
-        { return m_logicalDeletedKeys.empty() ? m_vector.size() : *m_logicalDeletedKeys.begin(); }
+        {
+            std::shared_lock lock(m_mutex);
+            return m_logicalDeletedKeys.empty() ? m_vector.size() : *m_logicalDeletedKeys.begin();
+        }
 
         std::size_t capacity() const
-        { return m_vector.size() + m_reserveSize; }
+        {
+            std::shared_lock lock(m_mutex);
+            return m_vector.size() + m_reserveSize;
+        }
 
         bool is_contiguous() const
         {
+            std::shared_lock lock(m_mutex);
             bool hasValue = false;
             for (auto it = m_vector.rbegin(); it != m_vector.rend(); ++it)
             {
@@ -348,6 +376,8 @@ class id_bimap
 
         void reserve(std::size_t p_size)
         {
+            std::unique_lock lock(m_mutex);
+
             if (p_size > m_vector.size())
             {
                 m_reserveSize = p_size - m_vector.size();
@@ -397,6 +427,24 @@ class id_bimap
             { return p_lhs < p_rhs; }
         };
 
+        id_bimap(const id_bimap& p_other, std::unique_lock<TMutex> p_otherLock)
+            : m_vector(p_other.m_vector)
+            , m_logicalDeletedKeys(p_other.m_logicalDeletedKeys)
+            , m_reserveSize(p_other.m_reserveSize)
+        {
+
+            for (auto i = 0u; i < m_vector.size(); ++i)
+            {
+                if (m_vector[i])
+                    m_valuesMap[*m_vector[i]] = i;
+            }
+        }
+
+        /**
+         * @note You must lock the @p m_mutex before calling this function!
+         * 
+         * @return key_type 
+         */
         key_type pop_next_index()
         {
             if (m_logicalDeletedKeys.empty())
@@ -407,6 +455,9 @@ class id_bimap
             return ret;
         }
 
+        /**
+         * @note You must lock the @p m_mutex before calling this function!
+         */
         void UpdateValueMap()
         {
             m_valuesMap.clear();
@@ -417,10 +468,33 @@ class id_bimap
             }
         }
 
+        /**
+         * @note You must lock the @p m_mutex before calling this function!
+         */
+        Iterator endImpl() const
+        { return Iterator(m_vector, m_valuesMap, m_vector.end()); }
+
+        /**
+         * @note You must lock the @p m_mutex before calling this function!
+         */
+        Iterator findImpl(const mapped_type& p_value) const
+        {
+            try
+            {
+                const auto key = m_valuesMap.at(p_value);
+                return Iterator(m_vector, m_valuesMap, key);
+            }
+            catch(const std::out_of_range& p_exception)
+            {
+                return endImpl();
+            }
+        }
+
         TVector m_vector;
         TMappedMap m_valuesMap;
         std::set<key_type> m_logicalDeletedKeys;
         unsigned m_reserveSize = 0;
+        mutable TMutex m_mutex;
 };
 
 template <typename mapped_type = NoValueType>
