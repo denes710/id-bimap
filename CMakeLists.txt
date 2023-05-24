@@ -7,14 +7,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 # set the project name
 project(Testing)
 
-add_library(IdBimap id_bimap.h)
-set_target_properties(IdBimap PROPERTIES LINKER_LANGUAGE CXX)
+add_library(IdBimap INTERFACE)
+
+target_include_directories(IdBimap INTERFACE include/)
 
 # turn off compile error messages
 add_compile_definitions(NFAIL)
 
-find_package (Threads)
+find_package(Threads REQUIRED)
+find_package(GTest REQUIRED)
 
-# add the executable
-add_executable(Testing main.cpp)
-target_link_libraries(Testing ${CMAKE_THREAD_LIBS_INIT})
+add_executable(runTests tests.cpp)
+
+target_link_libraries(runTests GTest::Main IdBimap ${CMAKE_THREAD_LIBS_INIT})
