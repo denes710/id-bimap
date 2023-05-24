@@ -11,12 +11,21 @@ add_library(IdBimap INTERFACE)
 
 target_include_directories(IdBimap INTERFACE include/)
 
-# turn off compile error messages
-add_compile_definitions(NFAIL)
-
 find_package(Threads REQUIRED)
 find_package(GTest REQUIRED)
 
-add_executable(runTests tests.cpp)
+# Add the test files
+set(TEST_SOURCES
+    test/simple_test.cpp
+)
 
-target_link_libraries(runTests GTest::Main IdBimap ${CMAKE_THREAD_LIBS_INIT})
+# Create an executable for the tests
+add_executable(simple_test ${TEST_SOURCES})
+
+# Link the library and the test executable
+target_link_libraries(simple_test gtest gtest_main IdBimap ${CMAKE_THREAD_LIBS_INIT})
+
+# Discover and run the tests
+gtest_discover_tests(simple_test)
+
+enable_testing()

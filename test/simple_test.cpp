@@ -221,11 +221,6 @@ TEST(IdBimapTest, F2_advanced)
 
   id_bimap<non_copyable> USM;
 
-#ifndef NFAIL
-  // EXPECT FAIL: The mapped type is not copyable!
-  id_bimap<non_copyable> USMC = USM;
-#endif
-
   {
     id_bimap<non_copyable> X;
     // EXPECT PASS: The mapped type is moveable.
